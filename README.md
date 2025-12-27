@@ -158,5 +158,4 @@ To avoid account suspension:
 
 **Remember**: Automation tools should be used responsibly and ethically. Always respect platform policies and user privacy.
 =======
-# linkedin-automation
->>>>>>> 5770d3092efebeae4906e750f1a5a07b72433d6a
+

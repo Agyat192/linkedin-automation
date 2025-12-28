@@ -13,10 +13,51 @@ A powerful Go-based automation tool for LinkedIn user search, connection request
 - **Rate Limiting**: Built-in protection against LinkedIn rate limits
 - **Chrome Profile Integration**: Uses your existing Chrome browser profile
 
+
+### Authentication System
+- Environment-based credentials ✔
+- Session cookie persistence ✔
+- Login failure detection ✔
+- Captcha / 2FA detection ✔
+
+### Search & Targeting
+- Search by job, company, location, keywords ✔
+- Pagination handling ✔
+- Duplicate profile detection ✔
+
+### Connection Requests
+- Human-like navigation and clicking ✔
+- Personalized notes (≤300 chars) ✔
+- Daily request limits ✔
+
+### Messaging System
+- Accepted connection detection ✔
+- Template-based follow-up messages ✔
+- Message tracking & persistence ✔
+
+### Anti-Bot & Stealth Techniques
+Mandatory:
+- Human-like mouse movement (Bezier curves) ✔
+- Randomized timing patterns ✔
+- Browser fingerprint masking ✔
+
+Additional:
+- Random scrolling behavior ✔
+- Human typing simulation ✔
+- Mouse hovering & wandering ✔
+- Activity scheduling ✔
+- Rate limiting & throttling ✔
+
+### Code Quality
+- Modular architecture ✔
+- Structured logging ✔
+- Config management ✔
+- Persistent state storage ✔
+
 ## Prerequisites
 
 - Go 1.21 or higher
-- Google Chrome or Microsoft Edge browser
+- Google Chrome 
 - LinkedIn account with valid credentials
 
 ## Installation

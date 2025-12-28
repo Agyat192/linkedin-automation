@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,6 +24,7 @@ type AuthManager struct {
 	email     string
 	password  string
 	sessionPath string
+	rng       *rand.Rand
 }
 
 // LoginResult represents the result of a login attempt
@@ -40,18 +43,66 @@ func NewAuthManager(email, password, sessionPath string, logger *logrus.Logger) 
 		password:    password,
 		sessionPath: sessionPath,
 		logger:      logger,
+		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+}
+
+// isChromeRunning checks if any Chrome process is running
+func isChromeRunning() bool {
+	cmd := exec.Command("tasklist", "/FI", "IMAGENAME eq chrome.exe", "/FO", "CSV")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	
+	// Check if chrome.exe is found in the output
+	return strings.Contains(string(output), "chrome.exe")
+}
+
+// getChromePath returns the path to Chrome executable
+func getChromePath() string {
+	// Common Chrome installation paths on Windows
+	paths := []string{
+		filepath.Join(os.Getenv("LOCALAPPDATA"), "Google\\Chrome\\Application\\chrome.exe"),
+		filepath.Join(os.Getenv("PROGRAMFILES"), "Google\\Chrome\\Application\\chrome.exe"),
+		filepath.Join(os.Getenv("PROGRAMFILES(X86)"), "Google\\Chrome\\Application\\chrome.exe"),
+	}
+	
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "" // Chrome not found
 }
 
 // InitializeBrowser initializes the browser with stealth settings
 func (a *AuthManager) InitializeBrowser(headless bool, userAgent string) error {
 	a.logger.Info("Initializing browser")
 
+	// Check if Chrome is running and use Chrome instead of Chromium
+	chromeRunning := isChromeRunning()
+	chromePath := getChromePath()
+	
+	if chromeRunning && chromePath != "" {
+		a.logger.Info("Chrome process detected, using Chrome instead of Chromium")
+	} else if chromeRunning {
+		a.logger.Warn("Chrome process detected but Chrome executable not found, proceeding with default browser")
+	} else {
+		a.logger.Info("No Chrome process detected, using default browser")
+	}
+
 	// Try to connect to existing browser first
 	if !headless {
 		// Try to connect to existing Chrome instance with user's profile
-		l := launcher.New().
-			Leakless(false).
+		l := launcher.New()
+		
+		// If Chrome is running, use Chrome executable
+		if chromeRunning && chromePath != "" {
+			l = l.Bin(chromePath)
+		}
+		
+		l = l.Leakless(false).
 			Headless(false).
 			Set("user-data-dir", os.Getenv("LOCALAPPDATA")+"\\Google\\Chrome\\User Data").
 			Set("profile-directory", "Default").
@@ -102,8 +153,15 @@ func (a *AuthManager) InitializeBrowser(headless bool, userAgent string) error {
 	}
 
 	// Create launcher with custom options - disable leakless to avoid Windows Defender issues
-	l := launcher.New().
-		Leakless(false). // Disable leakless to avoid virus detection
+	l := launcher.New()
+	
+	// If Chrome is running, use Chrome executable for new instance too
+	if chromeRunning && chromePath != "" {
+		l = l.Bin(chromePath)
+		a.logger.Info("Using Chrome executable for new browser instance")
+	}
+	
+	l = l.Leakless(false). // Disable leakless to avoid virus detection
 		Headless(headless).
 		Set("user-agent", userAgent).
 		Set("disable-web-security", "true").
@@ -158,8 +216,8 @@ func (a *AuthManager) InitializeBrowser(headless bool, userAgent string) error {
 func (a *AuthManager) Login(ctx context.Context) (*LoginResult, error) {
 	a.logger.Info("Starting LinkedIn login process")
 
-	// Create context with 60 second timeout
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// Create context with extended timeout for checkpoint verification
+	ctx, cancel := context.WithTimeout(ctx, 300*time.Second) // 5 minutes for manual verification
 	defer cancel()
 
 	result := &LoginResult{}
@@ -287,11 +345,11 @@ func (a *AuthManager) Login(ctx context.Context) (*LoginResult, error) {
 				a.logger.Warn("LinkedIn checkpoint/challenge detected - waiting for manual verification")
 				a.logger.Info("Please complete any verification in the browser window")
 				
-				// Wait for manual verification
+				// Wait for manual verification with extended timeout
 				select {
 				case <-ctx.Done():
 					return nil, fmt.Errorf("timeout during checkpoint verification")
-				case <-time.After(30 * time.Second):
+				case <-time.After(5 * time.Minute):
 					a.logger.Info("Checkpoint timeout, proceeding anyway...")
 				}
 				
@@ -514,7 +572,36 @@ func (a *AuthManager) inputText(selector, text string, timeout time.Duration) er
 			done <- err
 			return
 		}
-		done <- el.Input(text)
+		
+		// Simulate human typing with variable speed
+		if text == "" {
+			// Clear field - instant action
+			done <- el.Input(text)
+			return
+		}
+		
+		// Human-like typing: type each character with random delays
+		for i, char := range text {
+			// Random typing delay: 50-150ms per character
+			typingDelay := time.Duration(50 + a.rng.Intn(100)) * time.Millisecond
+			
+			// Type single character
+			if err := el.Input(string(char)); err != nil {
+				done <- err
+				return
+			}
+			
+			// Add typing delay
+			time.Sleep(typingDelay)
+			
+			// Occasional longer pause (thinking)
+			if i > 0 && i%5 == 0 && a.rng.Float64() < 0.3 {
+				pauseTime := time.Duration(200 + a.rng.Intn(300)) * time.Millisecond
+				time.Sleep(pauseTime)
+			}
+		}
+		
+		done <- nil
 	}()
 	
 	select {
@@ -567,36 +654,60 @@ func (a *AuthManager) fillCredentials() error {
 		return fmt.Errorf("email field not found: %w", err)
 	}
 
+	// Human-like pause before starting to fill
+	time.Sleep(time.Duration(1000 + a.rng.Intn(2000)) * time.Millisecond)
+
 	// Clear and fill email
 	if err := a.clickElement("input[name='session_key']", 5*time.Second); err != nil {
 		return fmt.Errorf("failed to click email field: %w", err)
 	}
 
+	// Pause after clicking field
+	time.Sleep(time.Duration(200 + a.rng.Intn(300)) * time.Millisecond)
+
 	if err := a.inputText("input[name='session_key']", "", 5*time.Second); err != nil {
 		return fmt.Errorf("failed to clear email field: %w", err)
 	}
 
-	if err := a.inputText("input[name='session_key']", a.email, 5*time.Second); err != nil {
+	// Brief pause before typing email
+	time.Sleep(time.Duration(100 + a.rng.Intn(200)) * time.Millisecond)
+
+	if err := a.inputText("input[name='session_key']", a.email, 15*time.Second); err != nil {
 		return fmt.Errorf("failed to input email: %w", err)
 	}
+
+	// Human-like pause between email and password
+	time.Sleep(time.Duration(1000 + a.rng.Intn(1500)) * time.Millisecond)
 
 	// Wait for password field with timeout
 	if err := a.waitForElement("input[name='session_password']", 10*time.Second); err != nil {
 		return fmt.Errorf("password field not found: %w", err)
 	}
 
+	// Pause before clicking password field
+	time.Sleep(time.Duration(200 + a.rng.Intn(300)) * time.Millisecond)
+
 	// Clear and fill password
 	if err := a.clickElement("input[name='session_password']", 5*time.Second); err != nil {
 		return fmt.Errorf("failed to click password field: %w", err)
 	}
 
+	// Pause after clicking field
+	time.Sleep(time.Duration(200 + a.rng.Intn(300)) * time.Millisecond)
+
 	if err := a.inputText("input[name='session_password']", "", 5*time.Second); err != nil {
 		return fmt.Errorf("failed to clear password field: %w", err)
 	}
 
-	if err := a.inputText("input[name='session_password']", a.password, 5*time.Second); err != nil {
+	// Brief pause before typing password
+	time.Sleep(time.Duration(100 + a.rng.Intn(200)) * time.Millisecond)
+
+	if err := a.inputText("input[name='session_password']", a.password, 15*time.Second); err != nil {
 		return fmt.Errorf("failed to input password: %w", err)
 	}
+
+	// Final pause before submitting
+	time.Sleep(time.Duration(1500 + a.rng.Intn(2000)) * time.Millisecond)
 
 	a.logger.Info("Credentials filled successfully")
 	return nil
@@ -609,6 +720,9 @@ func (a *AuthManager) submitLogin() error {
 	if err := a.waitForElement("button[type='submit']", 10*time.Second); err != nil {
 		return fmt.Errorf("login button not found: %w", err)
 	}
+
+	// Human-like hesitation before clicking submit
+	time.Sleep(time.Duration(1000 + a.rng.Intn(2000)) * time.Millisecond)
 
 	if err := a.clickElement("button[type='submit']", 5*time.Second); err != nil {
 		return fmt.Errorf("failed to click login button: %w", err)

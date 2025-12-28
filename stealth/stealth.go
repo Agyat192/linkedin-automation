@@ -13,13 +13,14 @@ import (
 
 // StealthManager implements anti-bot detection techniques
 type StealthManager struct {
-	config StealthConfig
-	logger *logrus.Logger
-	rng    *rand.Rand
+	config          StealthConfig
+	logger          *logrus.Logger
+	rng             *rand.Rand
 }
 
 // StealthConfig contains stealth configuration
 type StealthConfig struct {
+	Enabled           bool
 	MouseMovement     MouseMovementConfig
 	Timing            TimingConfig
 	Typing            TypingConfig
@@ -98,35 +99,53 @@ type Point struct {
 
 // NewStealthManager creates a new stealth manager
 func NewStealthManager(config StealthConfig, logger *logrus.Logger) *StealthManager {
-	return &StealthManager{
+	sm := &StealthManager{
 		config: config,
 		logger: logger,
 		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+	
+	return sm
 }
 
-// ApplyStealth applies all stealth techniques to the browser
+// ApplyStealth applies all stealth techniques to the browser with error handling
 func (s *StealthManager) ApplyStealth(page *rod.Page) error {
+	if !s.config.Enabled {
+		s.logger.Info("Stealth features disabled, proceeding normally")
+		return nil
+	}
+	
 	s.logger.Info("Applying stealth techniques")
+	
+	var stealthErrors []string
 
-	// Apply browser fingerprint masking
+	// Apply browser fingerprint masking (optional)
 	if err := s.applyFingerprintMasking(page); err != nil {
-		return fmt.Errorf("failed to apply fingerprint masking: %w", err)
+		s.logger.WithError(err).Warn("Failed to apply fingerprint masking")
+		stealthErrors = append(stealthErrors, "fingerprint masking")
 	}
 
-	// Disable automation indicators
+	// Disable automation indicators (optional)
 	if err := s.disableAutomationIndicators(page); err != nil {
-		return fmt.Errorf("failed to disable automation indicators: %w", err)
+		s.logger.WithError(err).Warn("Failed to disable automation indicators")
+		stealthErrors = append(stealthErrors, "automation indicators")
 	}
 
-	// Set random viewport
+	// Set random viewport (optional)
 	if s.config.Fingerprint.RandomViewport {
 		if err := s.setRandomViewport(page); err != nil {
-			return fmt.Errorf("failed to set random viewport: %w", err)
+			s.logger.WithError(err).Warn("Failed to set random viewport")
+			stealthErrors = append(stealthErrors, "random viewport")
 		}
 	}
 
-	s.logger.Info("Stealth techniques applied successfully")
+	if len(stealthErrors) > 0 {
+		s.logger.WithField("failed_features", stealthErrors).Warn("Failed to apply some stealth features")
+		s.logger.Info("Proceeding without stealth features")
+	} else {
+		s.logger.Info("Stealth techniques applied successfully")
+	}
+	
 	return nil
 }
 
@@ -407,5 +426,53 @@ func (s *StealthManager) setRandomViewport(page *rod.Page) error {
 		"height": height,
 	}).Debug("Set random viewport")
 
+	return nil
+}
+
+// IntelligentClick performs a realistic click with human-like behavior
+func (s *StealthManager) IntelligentClick(page *rod.Page, selector string) error {
+	// Simple delay before click
+	time.Sleep(s.RandomDelay())
+	
+	element, err := page.Element(selector)
+	if err != nil {
+		return fmt.Errorf("element not found: %w", err)
+	}
+	
+	return element.Click("left", 1)
+}
+
+// IntelligentScroll performs realistic scrolling behavior
+func (s *StealthManager) IntelligentScroll(page *rod.Page, direction string, amount int) error {
+	time.Sleep(s.RandomDelay())
+	
+	chunkSize := 3
+	scrollsNeeded := amount / chunkSize
+	
+	for i := 0; i < scrollsNeeded; i++ {
+		time.Sleep(time.Duration(100+s.rng.Intn(200)) * time.Millisecond)
+		
+		switch direction {
+		case "down":
+			page.Mouse.Scroll(0, -float64(chunkSize), 0)
+		case "up":
+			page.Mouse.Scroll(0, float64(chunkSize), 0)
+		}
+	}
+	return nil
+}
+
+// IntelligentHover performs realistic hover behavior
+func (s *StealthManager) IntelligentHover(page *rod.Page, selector string, duration time.Duration) error {
+	element, err := page.Element(selector)
+	if err != nil {
+		return fmt.Errorf("element not found for hover: %w", err)
+	}
+	
+	if err := element.Hover(); err != nil {
+		return fmt.Errorf("failed to hover element: %w", err)
+	}
+	
+	time.Sleep(duration)
 	return nil
 }

@@ -7,16 +7,19 @@ import (
 
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
+	
+	"linkedin-automation/ratelimit"
 )
 
 // Config represents the application configuration
 type Config struct {
-	LinkedIn LinkedInConfig `yaml:"linkedin"`
-	Browser  BrowserConfig  `yaml:"browser"`
-	Stealth  StealthConfig  `yaml:"stealth"`
-	Limits   LimitsConfig   `yaml:"limits"`
-	Storage  StorageConfig  `yaml:"storage"`
-	Logging  LoggingConfig  `yaml:"logging"`
+	LinkedIn   LinkedInConfig   `yaml:"linkedin"`
+	Browser    BrowserConfig    `yaml:"browser"`
+	Stealth    StealthConfig    `yaml:"stealth"`
+	Limits     LimitsConfig     `yaml:"limits"`
+	RateLimit  RateLimitConfig  `yaml:"rate_limit"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Logging    LoggingConfig    `yaml:"logging"`
 }
 
 // LinkedInConfig contains LinkedIn-specific settings
@@ -42,12 +45,13 @@ type BrowserConfig struct {
 
 // StealthConfig contains anti-bot detection settings
 type StealthConfig struct {
-	MouseMovement     MouseMovementConfig `yaml:"mouse_movement"`
-	Timing            TimingConfig        `yaml:"timing"`
-	Typing            TypingConfig        `yaml:"typing"`
-	Scrolling         ScrollingConfig     `yaml:"scrolling"`
-	Schedule          ScheduleConfig      `yaml:"schedule"`
-	Fingerprint       FingerprintConfig   `yaml:"fingerprint"`
+	Enabled           bool                 `yaml:"enabled"`
+	MouseMovement     MouseMovementConfig   `yaml:"mouse_movement"`
+	Timing            TimingConfig          `yaml:"timing"`
+	Typing            TypingConfig          `yaml:"typing"`
+	Scrolling         ScrollingConfig       `yaml:"scrolling"`
+	Schedule          ScheduleConfig        `yaml:"schedule"`
+	Fingerprint       FingerprintConfig     `yaml:"fingerprint"`
 }
 
 // MouseMovementConfig for realistic mouse behavior
@@ -112,7 +116,7 @@ type FingerprintConfig struct {
 	UserAgents        []string `yaml:"user_agents"`
 }
 
-// LimitsConfig contains rate limiting settings
+// LimitsConfig contains basic rate limiting settings
 type LimitsConfig struct {
 	DailyConnections   int           `yaml:"daily_connections"`
 	HourlyConnections   int           `yaml:"hourly_connections"`
@@ -120,6 +124,36 @@ type LimitsConfig struct {
 	HourlyMessages     int           `yaml:"hourly_messages"`
 	SearchResults      int           `yaml:"search_results"`
 	CooldownPeriod     time.Duration `yaml:"cooldown_period"`
+}
+
+// RateLimitConfig contains comprehensive rate limiting settings
+type RateLimitConfig struct {
+	// General delays
+	MinDelay       string `yaml:"min_delay"`        // Duration string (e.g., "2s")
+	MaxDelay       string `yaml:"max_delay"`        // Duration string (e.g., "10s")
+	
+	// Action-specific delays
+	SearchDelay    string `yaml:"search_delay"`     // Duration string
+	ConnectDelay   string `yaml:"connect_delay"`    // Duration string
+	MessageDelay   string `yaml:"message_delay"`    // Duration string
+	
+	// Daily limits
+	DailySearches  int    `yaml:"daily_searches"`   // Max searches per day
+	DailyConnects  int    `yaml:"daily_connects"`   // Max connection requests per day
+	DailyMessages  int    `yaml:"daily_messages"`   // Max messages per day
+	
+	// Hourly limits
+	HourlySearches int    `yaml:"hourly_searches"`  // Max searches per hour
+	HourlyConnects int    `yaml:"hourly_connects"`  // Max connection requests per hour
+	HourlyMessages int    `yaml:"hourly_messages"`  // Max messages per hour
+	
+	// Burst protection
+	BurstLimit     int    `yaml:"burst_limit"`      // Max actions in burst window
+	BurstWindow    string `yaml:"burst_window"`     // Duration string
+	
+	// Humanization
+	RandomizeDelay bool    `yaml:"randomize_delay"`  // Add randomness to delays
+	JitterPercent  float64 `yaml:"jitter_percent"`   // Percentage of jitter to add
 }
 
 // StorageConfig contains database settings
@@ -201,6 +235,7 @@ func setDefaults() {
 	viper.SetDefault("browser.user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	viper.SetDefault("browser.disable_web_security", false)
 
+	viper.SetDefault("stealth.enabled", false)
 	viper.SetDefault("stealth.mouse_movement.bezier_curves", true)
 	viper.SetDefault("stealth.mouse_movement.variable_speed", true)
 	viper.SetDefault("stealth.mouse_movement.overshoot", true)
@@ -250,6 +285,23 @@ func setDefaults() {
 	viper.SetDefault("limits.hourly_messages", 20)
 	viper.SetDefault("limits.search_results", 100)
 	viper.SetDefault("limits.cooldown_period", "30m")
+
+	// Rate limiting defaults
+	viper.SetDefault("rate_limit.min_delay", "2s")
+	viper.SetDefault("rate_limit.max_delay", "10s")
+	viper.SetDefault("rate_limit.search_delay", "5s")
+	viper.SetDefault("rate_limit.connect_delay", "30s")
+	viper.SetDefault("rate_limit.message_delay", "60s")
+	viper.SetDefault("rate_limit.daily_searches", 100)
+	viper.SetDefault("rate_limit.daily_connects", 50)
+	viper.SetDefault("rate_limit.daily_messages", 30)
+	viper.SetDefault("rate_limit.hourly_searches", 20)
+	viper.SetDefault("rate_limit.hourly_connects", 10)
+	viper.SetDefault("rate_limit.hourly_messages", 5)
+	viper.SetDefault("rate_limit.burst_limit", 3)
+	viper.SetDefault("rate_limit.burst_window", "30s")
+	viper.SetDefault("rate_limit.randomize_delay", true)
+	viper.SetDefault("rate_limit.jitter_percent", 20.0)
 
 	viper.SetDefault("storage.type", "sqlite")
 	viper.SetDefault("storage.path", "./data/linkedin.db")
@@ -320,4 +372,37 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("hourly connections must be positive")
 	}
 	return nil
+}
+
+// ToRateLimitConfig converts RateLimitConfig to ratelimit.Config
+func (c *RateLimitConfig) ToRateLimitConfig() (ratelimit.Config, error) {
+	parseDuration := func(s string) time.Duration {
+		if s == "" {
+			return 0
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			// Return default value on error
+			return 0
+		}
+		return d
+	}
+	
+	return ratelimit.Config{
+		MinDelay:       parseDuration(c.MinDelay),
+		MaxDelay:       parseDuration(c.MaxDelay),
+		SearchDelay:    parseDuration(c.SearchDelay),
+		ConnectDelay:   parseDuration(c.ConnectDelay),
+		MessageDelay:   parseDuration(c.MessageDelay),
+		DailySearches:  c.DailySearches,
+		DailyConnects:  c.DailyConnects,
+		DailyMessages:  c.DailyMessages,
+		HourlySearches: c.HourlySearches,
+		HourlyConnects: c.HourlyConnects,
+		HourlyMessages: c.HourlyMessages,
+		BurstLimit:     c.BurstLimit,
+		BurstWindow:    parseDuration(c.BurstWindow),
+		RandomizeDelay: c.RandomizeDelay,
+		JitterPercent:  c.JitterPercent,
+	}, nil
 }
